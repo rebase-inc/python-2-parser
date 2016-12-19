@@ -4,8 +4,8 @@ ARG PYPI_SERVER_HOST
 ARG PYPI_SERVER_SCHEME
 ARG PYPI_SERVER_PORT
 
-RUN apk update && \
-    apk add \
+RUN apk --quiet update && \
+    apk --quiet add \
         --no-cache \
         libpq \
         py-virtualenv \
@@ -17,7 +17,7 @@ COPY ./requirements.txt /
 COPY ./run.py /
 
 RUN source /venv/bin/activate && \
-    pip install \
+    pip --quiet install \
         --no-cache-dir \
         --trusted-host ${PYPI_SERVER_HOST} \
         --extra-index-url ${PYPI_SERVER_SCHEME}${PYPI_SERVER_HOST}:${PYPI_SERVER_PORT} \
