@@ -1,3 +1,4 @@
+import os
 import ast
 import json
 import base64
@@ -5,10 +6,12 @@ import logging
 import rsyslog
 
 from collections import Counter
+from multiprocessing import current_process
 
 import SocketServer
 
-rsyslog.setup()
+current_process().name = os.environ['HOSTNAME']
+rsyslog.setup(log_level = os.environ['LOG_LEVEL'])
 LOGGER = logging.getLogger()
 
 class ReferenceCollector(ast.NodeVisitor):
