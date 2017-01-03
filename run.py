@@ -45,8 +45,18 @@ class ReferenceCollector(ast.NodeVisitor):
 class CallbackRequestHandler(SocketServer.StreamRequestHandler):
     def handle(self):
         stream = self.request.makefile()
-        data = stream.readline()
-        code = base64.b64decode(data)
+        data = ''
+        while True:
+            rawdata += stream.read()
+            if not rawdata:
+                return
+            data += data.decode('utf-8').strip()
+            try:
+                data_as_object = json.loads(data)
+                break
+            except ValueError:
+                continue
+        code = base64.b64decode(data_as_object['code'])
         try:
             uses = ReferenceCollector().visit(ast.parse(code))
             stream.write(json.dumps(uses).encode('utf-8'))
