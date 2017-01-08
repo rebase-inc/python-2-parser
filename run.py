@@ -1,14 +1,15 @@
 import os
 import ast
 import json
+import errno
 import base64
+import socket
 import logging
 import rsyslog
+import asyncore
 
 from collections import Counter
 from multiprocessing import current_process
-
-import SocketServer
 
 current_process().name = os.environ['HOSTNAME']
 rsyslog.setup(log_level = os.environ['LOG_LEVEL'])
@@ -41,33 +42,56 @@ class ReferenceCollector(ast.NodeVisitor):
     def visit_Name(self, node):
         self.__add_to_counter(node.id, allow_unrecognized = False)
 
-
-class CallbackRequestHandler(SocketServer.StreamRequestHandler):
-    def handle(self):
-        stream = self.request.makefile()
-        data = ''
-        while True:
-            rawdata += stream.read()
-            if not rawdata:
-                return
-            data += data.decode('utf-8').strip()
-            try:
-                data_as_object = json.loads(data)
-                break
-            except ValueError:
-                continue
-        code = base64.b64decode(data_as_object['code'])
+def handle_data(sock):
+    data_as_str = ''
+    while True:
+        rawdata = sock.recv(4096)
+        if not rawdata:
+            return
+        data_as_str += rawdata.decode('utf-8').strip()
         try:
+            data_as_object = json.loads(data_as_str)
+            data_as_str = ''
+        except ValueError:
+            continue
+        try:
+            code = base64.b64decode(data_as_object['code'])
             uses = ReferenceCollector().visit(ast.parse(code))
-            stream.write(json.dumps(uses).encode('utf-8'))
+            data = { 'use_count': ReferenceCollector().visit(ast.parse(code)) }
+        except KeyError as exc:
+            # handle malformed request data
+            data = { 'error': errno.EINVAL }
         except SyntaxError as exc:
-            LOGGER.info('Skipping due to syntax error: {}'.format(str(exc)))
-            stream.write(json.dumps(ReferenceCollector().noop()).encode('utf-8'))
+            # handle actual invalid code
+            data = { 'error': errno.EIO }
+        except ValueError as exc:
+            if exc.args[0].find('source code string cannot contain null bytes') >= 0:
+                LOGGER.error('Skipping parsing because code contains null bytes!')
+                data = { 'error': errno.EPERM }
+            else:
+                LOGGER.exception('Unhandled exception!')
+                data = { 'error': errno.EIO }
         except Exception as exc:
-            LOGGER.info('Unhandled exception in python parser {}'.format(exc))
-            stream.write(json.dumps(ReferenceCollector().noop()).encode('utf-8'))
+            LOGGER.exception('Unhandled exception')
+            data = { 'error': errno.EIO }
+        sock.sendall(json.dumps(data))
 
+# TODO: Move this into asynctcp library so we have a python2/3 capable async callback server
+class CallbackRequestHandler(asyncore.dispatcher):
+
+    def __init__(self, host, port):
+        asyncore.dispatcher.__init__(self)
+        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.set_reuse_addr()
+        self.bind((host, port))
+        self.listen(5)
+
+    def handle_accept(self):
+        pair = self.accept()
+        if pair is not None:
+            sock, _ = pair
+            handle_data(sock)
 
 if __name__ == '__main__':
-    server = SocketServer.TCPServer(('0.0.0.0', 25253), CallbackRequestHandler)
-    server.serve_forever()
+    server = CallbackRequestHandler('0.0.0.0', 25253)
+    asyncore.loop()
