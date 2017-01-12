@@ -15,32 +15,46 @@ current_process().name = os.environ['HOSTNAME']
 rsyslog.setup(log_level = os.environ['LOG_LEVEL'])
 LOGGER = logging.getLogger()
 
+
 class ReferenceCollector(ast.NodeVisitor):
 
     def __init__(self):
         super(ReferenceCollector, self).__init__()
+        self.bindings = dict()
         self.use_count = Counter()
-
-    def __add_to_counter(self, name, allow_unrecognized = True):
-        if allow_unrecognized or name in self.use_count:
-            self.use_count.update([ name ])
 
     def visit(self, node):
         super(ReferenceCollector, self).visit(node)
+        self.use_count.update(['__grammar__'+node.__class__.__name__])
         return self.use_count
 
     def noop(self):
         return self.use_count
 
     def visit_Import(self, node):
-        for name in node.names:
-            self.__add_to_counter(name.asname or name.name)
+        for alias in node.names:
+            if alias.asname:
+                self.bindings[alias.asname] = alias.name
+            else:
+                self.bindings[alias.name] = alias.name
+            self.use_count.update([alias.name])
 
     def visit_ImportFrom(self, node):
-        self.__add_to_counter(node.module)
+        if node.level == 0:
+            for alias in node.names:
+                if alias.asname:
+                    self.bindings[alias.asname] = node.module
+                else:
+                    self.bindings[alias.name] = node.module
+                self.use_count.update([node.module])
+        else:
+            # relative import means private module
+            pass
 
     def visit_Name(self, node):
-        self.__add_to_counter(node.id, allow_unrecognized = False)
+        if node.id in self.bindings:
+            self.use_count.update([self.bindings[node.id]])
+
 
 def handle_data(sock):
     data_as_str = ''
@@ -50,20 +64,21 @@ def handle_data(sock):
             return
         data_as_str += rawdata.decode('utf-8').strip()
         try:
-            data_as_object = json.loads(data_as_str)
+            json_object = json.loads(data_as_str)
             data_as_str = ''
         except ValueError:
             continue
         try:
-            code = base64.b64decode(data_as_object['code'])
-            uses = ReferenceCollector().visit(ast.parse(code))
-            data = { 'use_count': ReferenceCollector().visit(ast.parse(code)) }
+            code = base64.b64decode(json_object['code'])
+            context = json_object['context']
+            LOGGER.debug('Parsing %s/%s %s', context['commit'][:7]+'...', context['path'], context['order'])
+            data = {
+                'use_count': ReferenceCollector().visit(
+                    ast.parse(code, filename=context['path'])
+                )
+            }
         except KeyError as exc:
-            # handle malformed request data
             data = { 'error': errno.EINVAL }
-        except SyntaxError as exc:
-            # handle actual invalid code
-            data = { 'error': errno.EIO }
         except ValueError as exc:
             if exc.args[0].find('source code string cannot contain null bytes') >= 0:
                 LOGGER.error('Skipping parsing because code contains null bytes!')
@@ -71,10 +86,14 @@ def handle_data(sock):
             else:
                 LOGGER.exception('Unhandled exception!')
                 data = { 'error': errno.EIO }
+        except SyntaxError as exc:
+            LOGGER.debug('%s => %s', exc, exc.text)
+            data = { 'error': errno.EIO }
         except Exception as exc:
             LOGGER.exception('Unhandled exception')
             data = { 'error': errno.EIO }
         sock.sendall(json.dumps(data))
+
 
 # TODO: Move this into asynctcp library so we have a python2/3 capable async callback server
 class CallbackRequestHandler(asyncore.dispatcher):
