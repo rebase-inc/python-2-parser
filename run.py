@@ -69,29 +69,33 @@ def handle_data(sock):
         except ValueError:
             continue
         try:
-            code = base64.b64decode(json_object['code'])
+            code = base64.b64decode(json_object['code'].encode('utf-8'))
             context = json_object['context']
-            LOGGER.debug('Parsing %s/%s %s', context['commit'][:7]+'...', context['path'], context['order'])
+            if 'path' not in context:
+                LOGGER.warning('No filename provided to parser!')
+                filename = '<unknown>'
+            else:
+                filename = context['path']
             data = {
                 'use_count': ReferenceCollector().visit(
-                    ast.parse(code, filename=context['path'])
+                    ast.parse(code, filename = filename)
                 )
             }
         except KeyError as exc:
-            data = { 'error': errno.EINVAL }
+            data = { 'error': errno.EINVAL, 'message': str(exc) }
         except ValueError as exc:
             if exc.args[0].find('source code string cannot contain null bytes') >= 0:
                 LOGGER.error('Skipping parsing because code contains null bytes!')
-                data = { 'error': errno.EPERM }
+                data = { 'error': errno.EPERM, 'message': str(exc) }
             else:
                 LOGGER.exception('Unhandled exception!')
-                data = { 'error': errno.EIO }
+                data = { 'error': errno.EIO, 'message': str(exc) }
         except SyntaxError as exc:
             LOGGER.debug('%s => %s', exc, exc.text)
-            data = { 'error': errno.EIO }
+            data = { 'error': errno.EIO, 'message': str(exc) }
         except Exception as exc:
             LOGGER.exception('Unhandled exception')
-            data = { 'error': errno.EIO }
+            data = { 'error': errno.EIO, 'message': str(exc) }
         sock.sendall(json.dumps(data))
 
 
