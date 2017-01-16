@@ -25,7 +25,7 @@ class ReferenceCollector(ast.NodeVisitor):
 
     def visit(self, node):
         super(ReferenceCollector, self).visit(node)
-        self.use_count.update(['__grammar__'+node.__class__.__name__])
+        self.use_count.update(['__grammar__.' + node.__class__.__name__])
         return self.use_count
 
     def noop(self):
