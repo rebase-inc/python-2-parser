@@ -10,12 +10,12 @@ import asyncore
 from collections import Counter
 from multiprocessing import current_process
 
-import rsyslog
+#import rsyslog
 
 from stdlib_list import stdlib_list
 
-current_process().name = os.environ['HOSTNAME']
-rsyslog.setup(log_level = os.environ['LOG_LEVEL'])
+current_process().name = os.environ['HOSTNAME'] if 'HOSTNAME' in os.environ else ''
+#rsyslog.setup(log_level = os.environ['LOG_LEVEL'] if 'LOG_LEVEL' in os.environ else 'DEBUG')
 LOGGER = logging.getLogger()
 
 STANDARD_LIBRARY = stdlib_list('2.7')
@@ -124,6 +124,7 @@ def handle_data(sock):
         try:
             code = base64.b64decode(json_object['code'].encode('utf-8'))
             context = json_object['context']
+            LOGGER.info('private modules are {}'.format(str(context['private_modules'] if 'private_modules' in context else [])))
             reference_collector = ReferenceCollector(context['private_modules'] if 'private_modules' in context else [])
             reference_collector.visit(ast.parse(code, filename = context['filename'] if 'filename' in context else '<unknown>'))
             data = { 'use_count': reference_collector.use_count }
