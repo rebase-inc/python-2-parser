@@ -32,7 +32,7 @@ class ReferenceCollector(ast.NodeVisitor):
         self.bindings.update({ name: '__stdlib__.' + name for name in STANDARD_LIBRARY })
 
     def add_grammar(self, node):
-        self.use_count.update(['__stdlib__.' + node.__class__.__name__])
+        self.use_count.update(['__stdlib__.__grammar__.' + node.__class__.__name__])
 
     def visit(self, node):
         super(ReferenceCollector, self).visit(node)
@@ -41,13 +41,15 @@ class ReferenceCollector(ast.NodeVisitor):
         self.add_grammar(node)
         super(ReferenceCollector, self).generic_visit(node)
 
-    def add_binding(self, bound_name, real_name):
+    def add_binding(self, bound_name, *real_attributes):
         if bound_name in self.bindings:
             return
-        if real_name.split('.')[0] in STANDARD_LIBRARY:
-            self.bindings[bound_name] = '__stdlib__.' + real_name
+        elif real_attributes[0] in STANDARD_LIBRARY:
+            self.bindings[bound_name] = '.'.join(['__stdlib__'] + list(real_attributes))
+        elif real_attributes[0] in self.bindings:
+            self.bindings[bound_name] = '.'.join([self.bindings[real_attributes[0]]] + list(real_attributes[1:]))
         else:
-            self.bindings[bound_name] = real_name
+            self.bindings[bound_name] = '.'.join(real_attributes)
 
     def add_use(self, *attributes):
         if attributes[0] not in self.bindings:
@@ -61,13 +63,14 @@ class ReferenceCollector(ast.NodeVisitor):
     def visit_Import(self, node):
         self.add_grammar(node)
         for alias in node.names:
-            self.add_binding(alias.asname or alias.name, alias.name)
+            self.add_binding(alias.asname or alias.name, *alias.name.split('.'))
 
     def visit_ImportFrom(self, node):
         self.add_grammar(node)
         if node.level == 0:
             for alias in node.names:
-                self.add_binding(alias.asname or alias.name, node.module + '.' + alias.name)
+                real_name = node.module.split('.') + [alias.name]
+                self.add_binding(alias.asname or alias.name, *real_name)
         else:
             # Relative import
             # TODO: Actually add this under __private__ namespace

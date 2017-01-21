@@ -21,6 +21,7 @@ from copy import *
 from logging import getLogger
 from flask import current_user
 from a.b import c as d
+from yfget import YahooFinanceGet, Converter
 from multiprocessing import current_process as process
 from os.path import abspath, dirname
 from os.path import abspath as apath
@@ -42,6 +43,7 @@ f.thing[0]
 d()
 
 some_counter = kollections.Counter()
+value = Converter.str_to_nplaces('5', n=3)
 
 root_logger = logging.getLogger()
 
@@ -77,7 +79,7 @@ class Collector(unittest.TestCase):
 
     def test_run(self):
         self.assertTrue(self.py3_ast)
-        private_modules = ['my_private_pkg']
+        private_modules = ['my_private_pkg', 'yfget']
         reference_collector = ReferenceCollector(private_modules)
         reference_collector.visit(self.py3_ast)
         uses = reference_collector.use_count
@@ -91,25 +93,27 @@ class Collector(unittest.TestCase):
         self.assertEqual(uses.pop('__stdlib__.pprint.PrettyPrinter'), 1)
         self.assertEqual(uses.pop('__stdlib__.comprehension'), 1)
         self.assertEqual(uses.pop('__stdlib__.Load'), 3)
-        self.assertEqual(uses.pop('__stdlib__.Assign'), 8)
-        self.assertEqual(uses.pop('__stdlib__.Attribute'), 18)
-        self.assertEqual(uses.pop('__stdlib__.Call'), 15)
+        self.assertEqual(uses.pop('__stdlib__.Assign'), 9)
+        self.assertEqual(uses.pop('__stdlib__.Attribute'), 20)
+        self.assertEqual(uses.pop('__stdlib__.Call'), 16)
         self.assertEqual(uses.pop('__stdlib__.Expr'), 8)
         self.assertEqual(uses.pop('__stdlib__.Import'), 2)
-        self.assertEqual(uses.pop('__stdlib__.ImportFrom'), 10)
+        self.assertEqual(uses.pop('__stdlib__.ImportFrom'), 11)
         self.assertEqual(uses.pop('__stdlib__.Module'), 1)
-        self.assertEqual(uses.pop('__stdlib__.Name'), 22)
-        self.assertEqual(uses.pop('__stdlib__.Str'), 6)
+        self.assertEqual(uses.pop('__stdlib__.Name'), 23)
+        self.assertEqual(uses.pop('__stdlib__.Str'), 7)
         self.assertEqual(uses.pop('__stdlib__.List'), 2)
         self.assertEqual(uses.pop('__stdlib__.ListComp'), 1)
-        self.assertEqual(uses.pop('__stdlib__.Num'), 5)
+        self.assertEqual(uses.pop('__stdlib__.Num'), 6)
         self.assertEqual(uses.pop('__stdlib__.ClassDef'), 1)
         self.assertEqual(uses.pop('__stdlib__.FunctionDef'), 1)
         self.assertEqual(uses.pop('__stdlib__.Index'), 1)
         self.assertEqual(uses.pop('__stdlib__.Print'), 1)
         self.assertEqual(uses.pop('__stdlib__.Subscript'), 1)
         self.assertEqual(uses.pop('__stdlib__.arguments'), 1)
+        self.assertEqual(uses.pop('__stdlib__.keyword'), 1)
         self.assertEqual(uses.pop('__private__.my_private_pkg.is_da_bomb'), 1)
+        self.assertEqual(uses.pop('__private__.yfget.Converter.str_to_nplaces'), 1)
         self.assertEqual(dict(uses), {})
 
 if __name__ == '__main__':
