@@ -1,11 +1,11 @@
-import os
 import ast
-import json
 import errno
+from json import loads, dumps
 import base64
-import socket
-import logging
-import asyncore
+import os
+from socket import error as socket_error, AF_INET, SOCK_STREAM
+from logging import getLogger
+from asyncore import dispatcher, loop
 
 from collections import Counter
 from multiprocessing import current_process
@@ -16,7 +16,7 @@ from stdlib_list import stdlib_list
 
 current_process().name = os.environ['HOSTNAME'] if 'HOSTNAME' in os.environ else ''
 rsyslog.setup(log_level = os.environ['LOG_LEVEL'] if 'LOG_LEVEL' in os.environ else 'DEBUG')
-LOGGER = logging.getLogger()
+LOGGER = getLogger()
 
 STANDARD_LIBRARY = stdlib_list('2.7')
 
@@ -112,58 +112,87 @@ class ReferenceCollector(ast.NodeVisitor):
         if name.id in self.bindings:
             self.add_use(name.id)
 
-def handle_data(sock):
-    data_as_str = ''
-    while True:
-        rawdata = sock.recv(4096)
-        if not rawdata:
-            return
-        data_as_str += rawdata.decode('utf-8').strip()
+
+
+TRY_AGAIN_ERRORS = (errno.EAGAIN, errno.EWOULDBLOCK)
+
+
+class RequestHandler(dispatcher):
+
+    def __init__(self, sock, address, buffer_size=4096):
+        dispatcher.__init__(self, sock=sock)
+        self.address = address
+        self.buffer_size = buffer_size
+        self.data_as_str = ''
+        self.encoded_response = ''
+
+    def handle_read(self):
         try:
-            json_object = json.loads(data_as_str)
-            data_as_str = ''
+            data = self.recv(self.buffer_size)
+        except socket_error as e:
+            if e.errno and e.errno in TRY_AGAIN_ERRORS:
+                return
+            else:
+                self.handle_error()
+                return
+        self.data_as_str += data.decode('utf-8').strip()
+        try:
+            request = loads(self.data_as_str)
+            self.data_as_str = ''
         except ValueError:
-            continue
+            return
         try:
-            code = base64.b64decode(json_object['code'].encode('utf-8'))
-            context = json_object['context']
+            code = base64.b64decode(request['code'].encode('utf-8'))
+            context = request['context']
             reference_collector = ReferenceCollector(context['private_modules'] if 'private_modules' in context else [])
             reference_collector.visit(ast.parse(code, filename = context['filename'] if 'filename' in context else '<unknown>'))
-            data = { 'use_count': reference_collector.use_count }
+            response = { 'use_count': reference_collector.use_count }
         except KeyError as exc:
-            data = { 'error': errno.EINVAL, 'message': str(exc) }
+            response = { 'error': errno.EINVAL, 'message': str(exc) }
         except ValueError as exc:
             if exc.args[0].find('source code string cannot contain null bytes') >= 0:
                 LOGGER.error('Skipping parsing because code contains null bytes!')
-                data = { 'error': errno.EPERM, 'message': str(exc) }
+                response = { 'error': errno.EPERM, 'message': str(exc) }
             else:
                 LOGGER.exception('Unhandled exception!')
-                data = { 'error': errno.EIO, 'message': str(exc) }
+                response = { 'error': errno.EIO, 'message': str(exc) }
         except SyntaxError as exc:
             LOGGER.debug('%s => %s', exc, exc.text)
-            data = { 'error': errno.EIO, 'message': str(exc) }
+            response = { 'error': errno.EIO, 'message': str(exc) }
         except Exception as exc:
             LOGGER.exception('Unhandled exception')
-            data = { 'error': errno.EIO, 'message': str(exc) }
-        sock.sendall(json.dumps(data))
+            response = { 'error': errno.EIO, 'message': str(exc) }
+        self.encoded_response = dumps(response)
+
+    def handle_write(self):
+        if self.encoded_response:
+            sent = self.send(self.encoded_response)
+            self.encoded_response = self.encoded_response[sent:]
+
+    def handle_error(self):
+        LOGGER.exception('Error in connection with {}'.format(self.address))
+        self.encoded_response = ''
 
 
-# TODO: Move this into asynctcp library so we have a python2/3 capable async callback server
-class CallbackRequestHandler(asyncore.dispatcher):
+class ConnectionHandler(dispatcher):
 
-    def __init__(self, host, port):
-        asyncore.dispatcher.__init__(self)
-        self.create_socket(socket.AF_INET, socket.SOCK_STREAM)
+    def __init__(self, host, port, request_buffer_size=4096):
+        dispatcher.__init__(self)
+        self.create_socket(AF_INET, SOCK_STREAM)
         self.set_reuse_addr()
         self.bind((host, port))
         self.listen(5)
+        self.request_buffer_size = request_buffer_size
+        LOGGER.debug('Listening at %s:%s', host, port)
 
     def handle_accept(self):
         pair = self.accept()
-        if pair is not None:
-            sock, _ = pair
-            handle_data(sock)
+        if pair:
+            RequestHandler(*pair, buffer_size=self.request_buffer_size)
+
 
 if __name__ == '__main__':
-    server = CallbackRequestHandler('0.0.0.0', 25253)
-    asyncore.loop()
+    server = ConnectionHandler('0.0.0.0', 25253)
+    loop()
+
+
