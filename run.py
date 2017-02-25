@@ -2,20 +2,26 @@ import ast
 import errno
 from json import loads, dumps
 import base64
-import os
-from socket import error as socket_error, AF_INET, SOCK_STREAM
+from os import environ as env, kill
+from signal import signal, SIGSTOP, SIGTERM, SIGCHLD, SIG_IGN
+from socket import (
+    error as socket_error,
+    AF_INET,
+    SOCK_STREAM,
+    SO_REUSEPORT,
+    SOL_SOCKET,
+)
+from sys import exit
 from logging import getLogger
 from asyncore import dispatcher, loop
 
 from collections import Counter
-from multiprocessing import current_process
+from multiprocessing import current_process, cpu_count, Process
 
 import rsyslog
 
 from stdlib_list import stdlib_list
 
-current_process().name = os.environ['HOSTNAME'] if 'HOSTNAME' in os.environ else ''
-rsyslog.setup(log_level = os.environ['LOG_LEVEL'] if 'LOG_LEVEL' in os.environ else 'DEBUG')
 LOGGER = getLogger()
 
 STANDARD_LIBRARY = stdlib_list('2.7')
@@ -180,19 +186,79 @@ class ConnectionHandler(dispatcher):
         dispatcher.__init__(self)
         self.create_socket(AF_INET, SOCK_STREAM)
         self.set_reuse_addr()
+        self.set_reuse_port()
+        # Re-using port & address is the core of the idea:
+        # since v3.9, Linux does connection balancing between multiple sockets listening to the same address,
+        # as long as they're all under the same uid (to prevent stealing).
+        # Connection balancing is not as good as request balancing:
+        # in case one connection's request hogs a cpu, all connections associated with that cpu will be blocked and make no progress.
+        # Also, long-live processes hold resources whether we use the service or not.
+        # Up side is the implementation is trivial: just fork the process before the listening socket is setup.
         self.bind((host, port))
         self.listen(5)
         self.request_buffer_size = request_buffer_size
-        LOGGER.debug('Listening at %s:%s', host, port)
+        LOGGER.debug('Listening at %s:%s',  host, port)
 
     def handle_accept(self):
         pair = self.accept()
         if pair:
             RequestHandler(*pair, buffer_size=self.request_buffer_size)
 
+    def handle_close(self):
+        LOGGER.debug('Closing listening socket')
+
+    def handle_error(self):
+        LOGGER.exception('Unhandled exception in ConnectionHandler')
+
+    def set_reuse_port(self):
+        try:
+            self.socket.setsockopt(
+                SOL_SOCKET,
+                SO_REUSEPORT,
+                self.socket.getsockopt(
+                    SOL_SOCKET,
+                    SO_REUSEPORT
+                ) | 1
+            )
+        except socket_error:
+            LOGGER.exception('Trying to set the SO_REUSEPORT option on the listening socket')
+
+
+def async_loop(address, port, is_child=True, children=None):
+    rsyslog.setup(log_level = env['LOG_LEVEL'] if 'LOG_LEVEL' in env else 'DEBUG')
+    LOGGER.info('Booted')
+    server = ConnectionHandler(address, port)
+    if is_child:
+        def shutdown_child(sig, frame):
+            server.close()
+            LOGGER.info('QUIT')
+        signal(SIGTERM, shutdown_child)
+    else:
+        def shutdown_master(sig, frame):
+            server.close()
+            for child in children:
+                kill(child.pid, SIGTERM)
+            LOGGER.info('QUIT')
+            exit(SIGTERM)
+        signal(SIGTERM, shutdown_master)
+        signal(SIGCHLD, SIG_IGN) # we don't join with children and don't want zombie
+    loop()
+
+
+def main(address, port):
+    current_process().name = 'python_2_parser.master'
+    children = [
+        Process(
+            target=async_loop,
+            args=(address, port),
+            name='python_2_parser.child.'+str(i)
+        ) for i in range(cpu_count() - 1)
+    ]
+    map(Process.start, children)
+    async_loop(address, port, is_child=False, children=children)
+
 
 if __name__ == '__main__':
-    server = ConnectionHandler('0.0.0.0', 25253)
-    loop()
+    main('0.0.0.0', 25253)
 
 
